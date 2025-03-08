@@ -54,8 +54,8 @@ int_t QF_run(void)
     QF_onStartup(); /* QF callback to configure and start interrupts */
 
     /* produce the QS_QF_RUN trace record */
-    QS_BEGIN_PRE_(QS_QF_RUN, 0U)
-    QS_END_PRE_()
+    QS_BEGIN_PRE(QS_QF_RUN, 0U)
+    QS_END_PRE()
     QS_CRIT_EXIT();
 
     return 0; /* return success */
@@ -83,7 +83,7 @@ void QActive_start_(QActive *const me, QPrioSpec const prioSpec, QEvt const **co
                     uint_fast16_t const stkSize, void const *const par)
 {
     /* allege that the RT-Thread queue is created successfully */
-    Q_ASSERT_INCRIT(210, rt_mb_init(&me->eQueue, me->thread.name, (void *)qSto, (qLen), RT_IPC_FLAG_FIFO) == RT_EOK);
+    Q_ASSERT_INCRIT(210, rt_mb_init(&me->eQueue, me->thread.parent.name, (void *)qSto, (qLen), RT_IPC_FLAG_FIFO) == RT_EOK);
 
     me->prio  = (uint8_t)(prioSpec & 0xFFU); /* QF-priority */
     me->pthre = (uint8_t)(prioSpec >> 8U);   /* preemption-threshold */
@@ -93,7 +93,7 @@ void QActive_start_(QActive *const me, QPrioSpec const prioSpec, QEvt const **co
     QS_FLUSH();                           /* flush the trace buffer to the host */
 
     Q_ASSERT_INCRIT(220, rt_thread_init(&me->thread,              /* RT-Thread thread control block */
-                                    me->thread.name,          /* unique thread name */
+                                    me->thread.parent.name,          /* unique thread name */
                                     &thread_function,         /* thread function */
                                     me,                       /* thread parameter */
                                     stkSto,                   /* stack start */
@@ -110,12 +110,12 @@ void QActive_setAttr(QActive *const me, uint32_t attr1, void const *attr2)
     /* this function must be called before QACTIVE_START(),
     */
     QF_CRIT_ENTRY();
-    Q_REQUIRE_INCRIT(300, me->thread.name == (char *)0);
+    Q_REQUIRE_INCRIT(300, me->thread.parent.name == (char *)0);
     switch (attr1)
     {
         case THREAD_NAME_ATTR:
-            rt_memset(me->thread.name, 0x00, RT_NAME_MAX);
-            rt_strncpy(me->thread.name, (char *)attr2, RT_NAME_MAX - 1);
+            rt_memset(me->thread.parent.name, 0x00, RT_NAME_MAX);
+            rt_strncpy(me->thread.parent.name, (char *)attr2, RT_NAME_MAX - 1);
             break;
             /* ... */
     }
@@ -154,18 +154,19 @@ bool QActive_post_(QActive *const me, QEvt const *const e, uint_fast16_t const m
     if (status)
     { /* can post the event? */
 
-        QS_BEGIN_PRE_(QS_QF_ACTIVE_POST, me->prio)
-        QS_TIME_PRE_();                      /* timestamp */
-        QS_OBJ_PRE_(sender);                 /* the sender object */
-        QS_SIG_PRE_(e->sig);                 /* the signal of the event */
-        QS_OBJ_PRE_(me);                     /* this active object (recipient) */
-        QS_2U8_PRE_(QEvt_getPoolNum_(me), e->refCtr_); /* pool Id & ref Count */
-        QS_EQC_PRE_(nFree);                  /* # free entries available */
-        QS_EQC_PRE_(0U);                     /* min # free entries (unknown) */
-        QS_END_PRE_()
+        QS_BEGIN_PRE(QS_QF_ACTIVE_POST, me->prio)
+        QS_TIME_PRE();                      /* timestamp */
+        QS_OBJ_PRE(sender);                 /* the sender object */
+        QS_SIG_PRE(e->sig);                 /* the signal of the event */
+        QS_OBJ_PRE(me);                     /* this active object (recipient) */
+        QS_2U8_PRE(QEvt_getPoolNum_(me), e->refCtr_); /* pool Id & ref Count */
+        QS_EQC_PRE(nFree);                  /* # free entries available */
+        QS_EQC_PRE(0U);                     /* min # free entries (unknown) */
+        QS_END_PRE()
        
+      
 
-        if (QEvt_getPoolNum_(e) != 0U)
+        // if (QEvt_getPoolNum_(e) != 0U)
         {                        /* is it a pool event? */
             QEvt_refCtr_inc_(e); /* increment the reference counter */
         }
@@ -178,15 +179,15 @@ bool QActive_post_(QActive *const me, QEvt const *const e, uint_fast16_t const m
     else
     {
 
-        QS_BEGIN_PRE_(QS_QF_ACTIVE_POST_ATTEMPT, me->prio)
-        QS_TIME_PRE_();                      /* timestamp */
-        QS_OBJ_PRE_(sender);                 /* the sender object */
-        QS_SIG_PRE_(e->sig);                 /* the signal of the event */
-        QS_OBJ_PRE_(me);                     /* this active object (recipient) */
-        QS_2U8_PRE_(QEvt_getPoolNum_(me), e->refCtr_); /* pool Id & ref Count */
-        QS_EQC_PRE_(nFree);                  /* # free entries available */
-        QS_EQC_PRE_(0U);                     /* min # free entries (unknown) */
-        QS_END_PRE_()
+        QS_BEGIN_PRE(QS_QF_ACTIVE_POST_ATTEMPT, me->prio)
+        QS_TIME_PRE();                      /* timestamp */
+        QS_OBJ_PRE(sender);                 /* the sender object */
+        QS_SIG_PRE(e->sig);                 /* the signal of the event */
+        QS_OBJ_PRE(me);                     /* this active object (recipient) */
+        QS_2U8_PRE(QEvt_getPoolNum_(me), e->refCtr_); /* pool Id & ref Count */
+        QS_EQC_PRE(nFree);                  /* # free entries available */
+        QS_EQC_PRE(0U);                     /* min # free entries (unknown) */
+        QS_END_PRE()
 
         QF_CRIT_EXIT();
     }
@@ -198,16 +199,16 @@ void QActive_postLIFO_(QActive *const me, QEvt const *const e)
 {
     QF_CRIT_ENTRY();
 
-    QS_BEGIN_PRE_(QS_QF_ACTIVE_POST_LIFO, me->prio)
-    QS_TIME_PRE_();                                  /* timestamp */
-    QS_SIG_PRE_(e->sig);                             /* the signal of this event */
-    QS_OBJ_PRE_(me);                                 /* this active object */
-    QS_2U8_PRE_(QEvt_getPoolNum_(e), e->refCtr_);             /* pool Id & ref Count */
-    QS_EQC_PRE_(me->eQueue.size - me->eQueue.entry); /* # free */
-    QS_EQC_PRE_(0U);                                 /* min # free entries (unknown) */
-    QS_END_PRE_()
+    QS_BEGIN_PRE(QS_QF_ACTIVE_POST_LIFO, me->prio)
+    QS_TIME_PRE();                                  /* timestamp */
+    QS_SIG_PRE(e->sig);                             /* the signal of this event */
+    QS_OBJ_PRE(me);                                 /* this active object */
+    QS_2U8_PRE(QEvt_getPoolNum_(e), e->refCtr_);             /* pool Id & ref Count */
+    QS_EQC_PRE(me->eQueue.size - me->eQueue.entry); /* # free */
+    QS_EQC_PRE(0U);                                 /* min # free entries (unknown) */
+    QS_END_PRE()
 
-    if (QEvt_getPoolNum_(e) != 0U)
+    // if (QEvt_getPoolNum(e) != 0U)
     {                        /* is it a pool event? */
         QEvt_refCtr_inc_(e); /* increment the reference counter */
     }
@@ -224,13 +225,13 @@ QEvt const *QActive_get_(QActive *const me)
 
     Q_ASSERT_INCRIT(710, rt_mb_recv(&me->eQueue, (rt_ubase_t *)&e, RT_WAITING_FOREVER) == RT_EOK);
   
-    QS_BEGIN_PRE_(QS_QF_ACTIVE_GET, me->prio)
-    QS_TIME_PRE_();                                  /* timestamp */
-    QS_SIG_PRE_(e->sig);                             /* the signal of this event */
-    QS_OBJ_PRE_(me);                                 /* this active object */
-    QS_2U8_PRE_(e->poolId_, e->refCtr_);             /* pool Id & ref Count */
-    QS_EQC_PRE_(me->eQueue.size - me->eQueue.entry); /* # free */
-    QS_END_PRE_()
+    QS_BEGIN_PRE(QS_QF_ACTIVE_GET, me->prio)
+    QS_TIME_PRE();                                  /* timestamp */
+    QS_SIG_PRE(e->sig);                             /* the signal of this event */
+    QS_OBJ_PRE(me);                                 /* this active object */
+    QS_2U8_PRE(e->poolId_, e->refCtr_);             /* pool Id & ref Count */
+    QS_EQC_PRE(me->eQueue.size - me->eQueue.entry); /* # free */
+    QS_END_PRE()
 
     return e;
 }
