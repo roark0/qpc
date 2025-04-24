@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<model version="5.1.4" links="1">
+<model version="6.1.1" links="1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="http://www.state-machine.com/qm/qm.xsd">
  <documentation>Simple &quot;Blinky&quot; model</documentation>
  <!--${qpc}-->
  <framework name="qpc"/>
@@ -51,6 +51,28 @@ BSP_TICKS_PER_SEC/2, BSP_TICKS_PER_SEC/2);</action>
     <state_diagram size="24,29"/>
    </statechart>
   </class>
+  <!--${AOs::Motor}-->
+  <class name="Motor" superclass="qpc::QActive">
+   <!--${AOs::Motor::timeEvt}-->
+   <attribute name="timeEvt" type="QTimeEvt" visibility="0x00" properties="0x00"/>
+   <!--${AOs::Motor::id}-->
+   <attribute name="id" type="uint8_t" visibility="0x00" properties="0x00"/>
+   <!--${AOs::Motor::inst[MOTOR_MAX_NUM]}-->
+   <attribute name="inst[MOTOR_MAX_NUM]" type="Motor" visibility="0x00" properties="0x01"/>
+   <!--${AOs::Motor::mt}-->
+   <attribute name="mt" type="rt_motor_t" visibility="0x00" properties="0x00"/>
+  </class>
+ </package>
+ <!--${Shared}-->
+ <package name="Shared" stereotype="0x01">
+  <!--${Shared::AO_Motor[MOTOR_MAX_NUM]}-->
+  <attribute name="AO_Motor[MOTOR_MAX_NUM]" type="QActive * const" visibility="0x00" properties="0x00"/>
+  <!--${Shared::Motor_ctor}-->
+  <operation name="Motor_ctor" type="void" visibility="0x00" properties="0x00"/>
+  <!--${Shared::MOTOR_MAX_NUM}-->
+  <attribute name="MOTOR_MAX_NUM" type="uint8_t" visibility="0x03" properties="0x00"/>
+  <!--${Shared::postEvt}-->
+  <attribute name="postEvt" type="QEvt" visibility="0x00" properties="0x00"/>
  </package>
  <!--${.}-->
  <directory name=".">
@@ -65,15 +87,20 @@ BSP_TICKS_PER_SEC/2, BSP_TICKS_PER_SEC/2);</action>
 #include &quot;qpc.h&quot;
 Q_DEFINE_THIS_FILE
 
-enum { BSP_TICKS_PER_SEC = 100 };
+#define LOG_TAG &quot;blinky&quot;
+#define DBG_SECTION_NAME &quot;blinky&quot;
+#define LOG_LVL DBG_LOG
+#include &lt;rtdbg.h&gt;
+
+enum { BSP_TICKS_PER_SEC = 1000 };
 
 void BSP_ledOff(void) {
-    rt_kprintf(&quot;LED OFF\n&quot;);
-}
-void BSP_ledOn(void) {
-    rt_kprintf(&quot;LED ON\n&quot;);
+    LOG_I(&quot;LED OFF\n&quot;);
 }
 
+void BSP_ledOn(void) {
+    LOG_I(&quot;LED ON\n&quot;);
+}
 
 enum BlinkySignals {
     TIMEOUT_SIG = Q_USER_SIG,
@@ -114,6 +141,1688 @@ $define ${AOs::Blinky}
 
 #endif /* RT_USING_FINSH */
 #endif /* QPC_USING_BLINKY_EXAMPLE */
+</text>
+  </file>
+  <!--${.::motor.h}-->
+  <file name="motor.h">
+   <text>#ifndef MOTOR_H
+#define MOTOR_H
+#include &quot;rtdef.h&quot;
+#include &lt;rtthread.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;stm32f4xx_hal.h&gt;
+#include &lt;stdbool.h&gt;
+
+enum motor_type
+{
+    MOTOR_TYPE_LINE           = 0x00,  // 线性电机类型
+    MOTOR_TYPE_CIRCLE         = 0x01,  // 环形电机类型
+    MOTOR_TYPE_SPECIAL_CIRCLE = 0x02,  // 特殊环形电机类型
+};
+/*
+ * 电机方向
+ */
+enum motor_direction
+{
+    DIRECTION_POSITIVE = 1,  // 正方向
+    DIRECTION_NEGATIVE = 0,  // 反方向
+};
+
+/*
+ * 电机电源模式
+ */
+enum motor_power_mode
+{
+    LOW_POWER_MODE    = 0,  // 低功耗模式
+    NORMAL_POWER_MODE = 1,  // 正常模式
+};
+
+/*
+ * 复位状态
+ */
+enum motor_reset_status
+{
+    MOTOR_NO_RESET_STATUS = 0,  // 没有复位
+    MOTOR_RESET_STATUS    = 1,  // 已复位
+};
+
+/*
+ * 电机停止模式
+ */
+enum motor_stop_mode
+{
+    MOTOR_INSTANT_STOP = 0,  // 立即停止
+    MOTOR_DEC_TO_STOP  = 1,  // 减速停止
+};
+
+/*
+ * 使能与不使能
+ * 开启与关闭
+ */
+enum switch_value
+{
+    MOTOR_DISABLE = 0,  // 不使能
+    MOTOR_ENABLE  = 1,  // 使能
+    MOTOR_OPEN    = 2,  // 打开
+    MOTOR_CLOSE   = 3,  // 关闭
+};
+
+/*
+ * 电机事件标志
+ */
+enum motor_event_flag
+{
+    MOTOR_EVENT_COMPLETED_FLAG = (1 &lt;&lt; 0x00),  // 电机运动完成标志
+    MOTOR_EVENT_ERROR_FLAG     = (1 &lt;&lt; 0x01),  // 电机运动错误标志
+    MOTOR_EVENT_TRIGGER_FLAG   = (1 &lt;&lt; 0x02),  // 电机运动触发标志
+    MOTOR_EVENT_ARRIVED_FLAG   = (1 &lt;&lt; 0x03),  // 电机抵达触发标志
+};
+
+/*
+ * 电机硬件控制错误
+ */
+enum motor_error
+{
+    MOTOR_ERROR_TIMEOUT_FLAG = (1 &lt;&lt; 0x00),  // FPGA硬件控制上报: 电机运动超时
+    MOTOR_ERROR_ERROR1_FLAG  = (1 &lt;&lt; 0x01),  // FPGA硬件控制上报: 电机错误1
+    MOTOR_ERROR_ERROR2_FLAG  = (1 &lt;&lt; 0x02),  // FPGA硬件控制上报: 电机错误2
+};
+
+/*
+ * 电机错误码
+ */
+enum motor_error_code
+{
+    MOTOR_ERROR_ERR_NONE    = 0x00,  //
+    MOTOR_ERROR_NO_MEMERY   = 0x01,  // 电机系统资源不足
+    MOTOR_ERROR_TIMEOUT     = 0x02,  // 电机运动超时
+    MOTOR_ERROR_NOT_RESET   = 0x03,  // 电机运动没有复位
+    MOTOR_ERROR_RESET_FAIL  = 0x04,  // 电机运动复位失败
+    MOTOR_ERROR_CRASH       = 0x05,  // 电机运动碰撞错误
+    MOTOR_ERROR_EXCEL_LIMIT = 0x06,  // 电机运动范围超限
+    MOTOR_ERROR_LOSE_STEP   = 0x07,  // 电机运动丢步
+};
+
+/*
+ * 电机函数类型
+ */
+enum function_type
+{
+    FUNCTION_TRIGGER_IRQ = 0x01,  // 触发中断回调函数
+    FUNCTION_ERROR_IRQ,           // 错误中断回调函数
+    FUNCTION_COMPLETED_IRQ,       // 完整包中断回调函数
+};
+
+/*
+ * 信号触发源
+ */
+enum signal_source
+{
+    NULL_SIGNAL_SOURCE   = 0x00U,  // 无触发源
+    RESET_SIGNAL_SOURCE  = 0x02U,  // 复位信号源
+    CRASH_SIGNAL_SOURCE  = 0x04U,  // 碰撞信号源
+    ARRIVE_SIGNAL_SOURCE = 0x08U,  // 抵达型号源
+    CODE_SIGNAL_SOURCE   = 0x10U,  // 码齿信号源
+};
+
+/*
+ *  电机预定义速度档位
+ */
+enum
+{
+    MOTOR_GRADE_1 = 0x00,  // 该档位给复位运动
+    MOTOR_GRADE_2,
+    MOTOR_GRADE_3,
+    MOTOR_GRADE_4,
+    MOTOR_GRADE_5,
+    MOTOR_GRADE_6,
+    MOTOR_GRADE_7,
+    MOTOR_GRADE_8,
+    MOTOR_GRADE_9,
+    MOTOR_GRADE_10,
+    MOTOR_GRADE_11,
+    MOTOR_GRADE_12,
+    MOTOR_GRADE_13,
+    MOTOR_GRADE_14,
+    MOTOR_GRADE_15,
+    MOTOR_GRADE_16,
+    MOTOR_GRADE_MAX_NUM = 0x10,
+};
+
+/*
+ * 电机速度结构体
+ */
+typedef struct motor_speed
+{
+    uint32_t start_frequency;  // 起始频率值
+    uint32_t max_frequency;    // 匀速频率值
+    uint32_t end_frequency;    // 结束频率值
+    uint32_t step_t[7];        // 第一阶步数
+} motor_speed_t;
+
+/*
+ * 电机应用层配置参数(初始化)
+ */
+typedef struct motor_configure
+{
+    uint8_t motor_id;
+    const char *name;    // 电机名称
+    uint8_t motor_type;  // 电机类型
+
+    TIM_TypeDef *timerType;  // 定时类型
+    uint32_t Channel;        // 定时器通道号
+
+    uint32_t pwm_pin;     // 脉冲输出引脚
+    GPIO_TypeDef *GPIOx;  // 脉冲所在的引脚位置
+    rt_base_t dir_pin;    // 方向输出引脚
+    rt_base_t lpw_pin;    // 低功耗控制引脚
+
+    bool direction_level;  // 正方向的有效电平
+    bool low_power_level;  // 低功耗的有效电平
+
+    rt_base_t reset_pin;   // 复位检测引脚
+    rt_base_t crash_pin;   // 碰撞检测引脚
+    rt_base_t arrive_pin;  // 抵达触发引脚
+    rt_base_t code_pin;    // 码盘检测引脚
+
+    uint8_t reset_signal_level;   // 复位光耦检测到的有效电平
+    uint8_t crash_signal_level;   // 碰撞光耦检测到的有效电平
+    uint8_t arrive_signal_level;  // 抵达光耦检测到的有效电平
+    uint8_t code_signal_level;    // 码齿光耦检测到的有效电平
+    // 要求触发时的值为1
+
+    int32_t min_position;  // 最小位置
+    int32_t max_position;  // 最大位置
+
+    int32_t steps_reset_signal_posi;  // 复位触发后运动的步数(正方向找光耦)
+    int32_t steps_reset_signal_nega;  // 复位触发后运动的步数(反方向离开光耦)
+    int32_t steps_code_signal;        // 液面触发后运动的步数
+    int32_t steps_crash_signal;       // 碰撞触发后运动的步数
+    int32_t steps_arrive_signal;      // 抵达触发后运动的步数
+
+    //   uint8_t bubble_signal_level; // 气泡传感器检测的有效电平
+    motor_speed_t speed_para[MOTOR_GRADE_MAX_NUM];  // 电机速度档位
+} rt_motor_config_t;
+
+/* 电机状态 */
+typedef enum
+{
+    MOTOR_STATE_INACTIVE = 0x00,                  //空闲
+    MOTOR_STATE_ACCEL    = 0x01,                  //加速
+    MOTOR_STATE_RUN      = 0x02,                  //匀速
+    MOTOR_STATE_DECEL    = 0x03,                  //减速
+    MOTOR_STATE_STOP     = MOTOR_STATE_INACTIVE,  //停止
+} motorState_t;
+
+#define ACCTIMARR 1000
+#define DECTIMARR 1000
+/* motor device and operations for RT-Thread */
+typedef struct
+{
+    TIM_HandleTypeDef timerHandle;  //定时器句柄
+
+    // 电机设备初始化配置
+    rt_motor_config_t *config;
+
+    // 电机设备运行产生的数据变量
+    struct rt_event motor_event;  // 电机事件
+    rt_mq_t mq; // 消息队列
+
+    uint32_t timerCount;       // 中断计数值
+    motorState_t motionState;  // 运动状态
+    int32_t relativePosition;  // 相对位置
+    int32_t currentPosition;   // 当前的位置,相对复位原点的位置
+    uint32_t currentFreq;      // 当前频率
+    uint32_t timeLoadIndex;    // 步数加载索引
+    uint32_t timeLoadValue;    // 定时器加载值
+    uint32_t triggle_source;   // 触发检测源
+
+    uint32_t stepT[7];  // T1阶段步数(包含前阶段)
+
+    int32_t accMax;  // 加加速度最大值
+    int32_t decMax;  // 减加速度最大值
+    int32_t acc1;    // 加加速加速度的斜率(T1)
+    int32_t acc2;    // 加减速加速度的斜率(T3)
+    int32_t dec1;    // 减加速加速度的斜率(T5)
+    int32_t dec2;    // 减减速加速度的斜率(T7)
+
+    int32_t stepAcc;  // 加速的步数
+    int32_t stepDec;  // 减速的步数
+
+    uint16_t accTimArr[ACCTIMARR];  // 加速度的加速计数值
+    uint16_t decTimArr[DECTIMARR];  // 减加速的减速计数值
+
+    uint8_t reset_status;               // 电机复位状态
+    uint8_t start_trigger_status;       // 电机起始触发状态
+    uint16_t trigger_status;            // 记录触发状态（值是触发源）
+    uint32_t absolute_steps;            // 单次运动绝对步数
+    uint32_t trigger_after_move_steps;  // 触发后要走的减速步数
+
+    uint8_t direction;   // 当前的运动方向
+    uint8_t error_code;  // 当前错误码
+
+    uint8_t reset_signal_stop_way;   // 复位停止方式（减速|立即）停止
+    uint8_t crash_signal_stop_way;   // 碰撞停止方式（减速|立即）停止
+    uint8_t arrive_signal_stop_way;  // 到达停止方式（减速|立即）停止
+    uint8_t liquid_signal_stop_way;  // 液面检测停止方式（减速|立即）停止
+
+    motor_speed_t current_speed;  //电机速度结构体
+} rt_motor_t;
+
+// 应用层直接调用接口
+uint32_t rt_motor_init(rt_motor_t *motor, rt_motor_config_t *config);
+uint32_t rt_motor_reset(rt_motor_t *motor, uint32_t mtGrade, uint32_t timeout);
+uint32_t rt_motor_goto(rt_motor_t *motor, int32_t target_position, uint32_t grade, uint32_t timeout);
+uint32_t rt_motor_move(rt_motor_t *motor, uint32_t grade, int32_t target_steps, uint32_t timeout);
+uint32_t rt_motor_trigger_move(rt_motor_t *motor, uint16_t trigger_source, uint32_t grade, int32_t trigger_steps, uint32_t step2, uint32_t timeout);
+uint32_t rt_motor_set_ad_collect_enable(rt_motor_t *motor, uint8_t enable_flag, uint32_t dynamic_steps);
+uint32_t rt_motor_wait(rt_motor_t *motor, uint32_t timeout);
+uint32_t rt_motor_start(rt_motor_t *motor);
+uint32_t rt_motor_instant_stop(rt_motor_t *motor);
+uint32_t rt_motor_dec_stop(rt_motor_t *motor, uint32_t target_steps);
+uint32_t rt_motor_set_direction(rt_motor_t *motor, uint8_t direction);
+void rt_motor_set_low_power(rt_motor_t *motor, uint8_t mode);
+uint32_t rt_motor_set_error_code(rt_motor_t *motor, uint32_t error_code);
+uint32_t rt_motor_get_error_code(rt_motor_t *motor, uint32_t *error_code);
+uint32_t rt_motor_set_current_position(rt_motor_t *motor, int32_t position);
+int32_t rt_motor_get_current_position(rt_motor_t *motor);
+void rt_motor_set_reset_status(rt_motor_t *motor, uint8_t reset_status);
+uint32_t rt_motor_get_reset_status(rt_motor_t *motor);
+uint32_t rt_motor_get_absolute_steps(rt_motor_t *motor);
+uint32_t rt_motor_get_sensor(rt_motor_t *motor, uint16_t trigger_source);
+uint32_t rt_motor_move_to_zero(rt_motor_t *motor, uint32_t mtGrade, uint32_t timeout);
+int rt_motor_get_id(rt_motor_t *motor);
+int rt_motor_get_reset_value(rt_motor_t *motor);
+#endif
+</text>
+  </file>
+  <!--${.::motor.c}-->
+  <file name="motor.c">
+   <text>#include &lt;qpc.h&gt;
+#include &lt;rtthread.h&gt;
+#include &lt;rtdevice.h&gt;
+#include &lt;rtconfig.h&gt;
+#include &lt;stdint.h&gt;
+#include &lt;drv_common.h&gt;
+#include &lt;protocol.h&gt;
+#include &quot;motor.h&quot;
+
+#define LOG_TAG &quot;motor&quot;
+#define DBG_SECTION_NAME &quot;motor&quot;
+#define LOG_LVL LOG_LVL_DBG
+#include &lt;rtdbg.h&gt;
+#define MT_TIM_PERSCALER 35
+
+$declare ${AOs::Motor}
+
+uint32_t rt_motor_calcaulate_speed(rt_motor_t *motor, uint32_t target_steps);
+void rt_motor_set_enable(rt_motor_t *motor);
+
+int rt_motor_get_crash_value(rt_motor_t *motor);
+int rt_motor_get_arrive_value(rt_motor_t *motor);
+int rt_motor_get_reset_value(rt_motor_t *motor);
+int rt_motor_get_code_value(rt_motor_t *motor);
+
+// 电机复位
+uint32_t rt_motor_move_to_zero(rt_motor_t *motor, uint32_t grade, uint32_t timeout)
+{
+    uint32_t reg_value = ENABLE;
+    uint32_t result    = RT_EOK;
+    int32_t acctiarr;
+
+    /* 复位触发后运动的步数(反方向离开光耦)是否大于加速数组 */
+    if (motor-&gt;config-&gt;steps_reset_signal_nega &gt; ACCTIMARR)
+        acctiarr = ACCTIMARR - 1;
+    else
+        acctiarr = motor-&gt;config-&gt;steps_reset_signal_nega;
+
+    // 获取复位光耦的输入值(指定信号源)
+    reg_value = rt_motor_get_sensor(motor, RESET_SIGNAL_SOURCE);
+    if (reg_value == 0)
+    {
+        result = rt_motor_trigger_move(motor, RESET_SIGNAL_SOURCE, grade, -motor-&gt;config-&gt;max_position, acctiarr, timeout);
+
+        if (result == RT_ERROR)
+        {
+            return RT_ERROR;
+        }
+    }
+
+    // 复位后设置当前位置为0
+    motor-&gt;currentPosition = 0;
+    motor-&gt;reset_status    = MOTOR_RESET_STATUS;
+
+    return RT_EOK;
+}
+
+/******************************************************
+* @decription:
+*      电机复位
+* @para:
+*     @dev:             设备
+            @mtGrade：    速度档位
+*     @timeout:     超时时间
+* @return : rt_err_t
+* @author： sicheng.lai
+* @date: 2021-03-02
+*******************************************************/
+uint32_t rt_motor_reset(rt_motor_t *motor, uint32_t grade, uint32_t timeout)
+{
+    uint32_t reg_value      = ENABLE;
+    uint32_t result         = RT_EOK;
+    rt_uint32_t motor_grade = 0;
+
+    LOG_I(&quot;%s %d&quot;, __func__, rt_motor_get_id(motor));
+    // 复位时先清除错误码
+    rt_motor_set_error_code(motor, MOTOR_ERROR_ERR_NONE);
+
+    // (1)判断是否在光耦，如果不在光耦就执行第一次找光耦，在光耦就执行下一步
+    // 获取复位光耦的输入值(指定信号源)
+    reg_value = rt_motor_get_sensor(motor, RESET_SIGNAL_SOURCE);
+
+    if (reg_value == 0)  // 光耦外
+    {
+        LOG_I(&quot;step1: find oc:%d&quot;, motor-&gt;config-&gt;steps_reset_signal_nega);
+        rt_thread_delay(10);  // 延时10ms 消抖操作
+        reg_value = rt_motor_get_sensor(motor, RESET_SIGNAL_SOURCE);
+
+        if (reg_value == 0)
+        {
+            /* 将当前位置设置为最大位置 */
+            motor-&gt;currentPosition = motor-&gt;config-&gt;max_position;
+
+            /* 触发运动 参数：设备 速度档位 触发源（复位信号） 触发后走的步数（减速） 目标方向 超时时间*/
+            result = rt_motor_trigger_move(motor, RESET_SIGNAL_SOURCE, grade, -motor-&gt;config-&gt;max_position, motor-&gt;config-&gt;steps_reset_signal_nega,
+                                           timeout);
+            if (result == RT_ERROR)
+            {
+                return result;
+            }
+        }
+    }
+
+    // (2) 正向出光耦        此时电机一定在光耦内。但在光耦的位置未知（存在一开始就在光耦内的情况），因此进行正向出光耦操作
+    // 脱离光耦，走大于加速的步数，让后面(3)反向找光耦动作执行时, 找到光耦状态是匀速的
+
+    LOG_I(&quot;step2: out oc:%d&quot;, motor-&gt;config-&gt;steps_reset_signal_posi);
+
+    /* 当前位置设置为最小位置 */
+    motor-&gt;currentPosition = motor-&gt;config-&gt;min_position;
+    /* 参数：设备 速度档位 运动步数 运动方向 超时时间 */
+    result = rt_motor_trigger_move(motor, RESET_SIGNAL_SOURCE, grade, motor-&gt;config-&gt;max_position, motor-&gt;config-&gt;steps_reset_signal_posi, timeout);
+    if (result == RT_ERROR)
+    {
+        return RT_ERROR;
+    }
+
+    // 特殊环形电机
+    if (motor-&gt;config-&gt;motor_type == MOTOR_TYPE_SPECIAL_CIRCLE)
+    {
+        motor_grade = 1;
+    }
+    else
+    {
+        motor_grade = grade;
+    }
+
+    rt_thread_delay(100);
+
+    // (3) 反向找光耦，此时找到光耦为匀速阶段  出光耦后，电机的位置是一定的。此时再进光耦，到达机械零点
+
+    // 反向找光耦
+    LOG_I(&quot;step3: find oc:%d&quot;, motor-&gt;config-&gt;steps_reset_signal_nega);
+    motor-&gt;currentPosition = motor-&gt;config-&gt;max_position;  // 将当前位置设置为最大位置
+    // 触发运动 参数：设备 速度档位 触发源（复位信号） 触发后走的步数 目标方向 超时时间
+    result =
+        rt_motor_trigger_move(motor, RESET_SIGNAL_SOURCE, motor_grade, -motor-&gt;config-&gt;max_position, motor-&gt;config-&gt;steps_reset_signal_nega, timeout);
+    if (result == RT_ERROR)
+    {
+
+        return RT_ERROR;
+    }
+
+    // 复位后设置当前位置为0
+    motor-&gt;currentPosition = 0;
+    motor-&gt;reset_status    = MOTOR_RESET_STATUS;  // 电机复位状态设置为复位
+
+    return RT_EOK;
+}
+
+// 电机到指定的位置
+uint32_t rt_motor_goto(rt_motor_t *motor, int32_t target_position, uint32_t grade, uint32_t timeout)
+{
+    int32_t finaltarget_position = 0;
+
+    // 当前电机没有复位，不能执行goto
+    if (motor-&gt;reset_status == MOTOR_NO_RESET_STATUS)
+    {
+        motor-&gt;error_code = MOTOR_ERROR_NOT_RESET;  // 设置电机错误码为电机未复位
+        LOG_E(&quot;MOTOR_ERROR_NOT_RESET,%d,%d&quot;, motor-&gt;config-&gt;motor_id, __LINE__);
+        return RT_ERROR;
+    }
+
+    if (target_position == motor-&gt;currentPosition)  // 如果目标位置等于当前位置
+    {
+        return RT_EOK;
+    }
+
+    // 盘电机使用转最短距离到达目标位置（如果电机类型为环形电机【比如盘电机】）
+    if (motor-&gt;config-&gt;motor_type == MOTOR_TYPE_CIRCLE || motor-&gt;config-&gt;motor_type == MOTOR_TYPE_SPECIAL_CIRCLE)
+    {
+        // 目标位置 - 当前位置 &gt; 最大位置的一半
+        if ((target_position - motor-&gt;currentPosition) &gt; (motor-&gt;config-&gt;max_position) / 2)
+        {
+            /* 要运动的步数 =  目标位置 - 当前位置 */
+            finaltarget_position = target_position - motor-&gt;currentPosition;
+            /* 要运动的步数 = 电机最大位置 - 要运动的步数 （进行反转） */
+            finaltarget_position = motor-&gt;config-&gt;max_position - finaltarget_position;
+            /* 运动方向改为反方向 */
+        }
+        else
+        {
+            /* 小于一半则直接正向运动 */
+            finaltarget_position = target_position - motor-&gt;currentPosition;
+        }
+    }
+    else
+    {
+        /* 如果不为盘电机，则直接正向运动 */
+        finaltarget_position = target_position - motor-&gt;currentPosition;
+    }
+
+    // 电机运动
+    return rt_motor_move(motor, grade, finaltarget_position, timeout);
+}
+
+/******************************************************
+* @decription:
+*      电机移动目标步数
+* @para:
+*     @dev:                      设备
+*     @grade：    速度档位
+*     @target_position：    目标步数
+*     @target_dir：         目标方向
+*     @timeout:                  超时时间
+* @return : rt_err_t
+* @author： sicheng.lai
+* @date: 2021-03-02
+*******************************************************/
+uint32_t rt_motor_move(rt_motor_t *motor, uint32_t grade, int32_t target_steps, uint32_t timeout)
+{
+    uint32_t result;
+
+    LOG_I(&quot;motor_move:ID=%d,G=%d,%d,T=%d&quot;, motor-&gt;config-&gt;motor_id, grade, target_steps, timeout);
+
+    uint32_t target_dir = DIRECTION_POSITIVE;
+    if (target_steps &lt; 0)
+    {
+        target_steps = -target_steps;
+        target_dir   = DIRECTION_NEGATIVE;
+    }
+
+    motor-&gt;direction = target_dir;  // 运动方向
+
+    /* 判断电机复位状态 */
+    if (motor-&gt;triggle_source == NULL_SIGNAL_SOURCE)
+    {
+// 当前电机没有复位，不能执行move
+#if (RT_CANTP_RX_ID != 4)
+        if (motor-&gt;reset_status == MOTOR_NO_RESET_STATUS)
+        {
+            motor-&gt;error_code = MOTOR_ERROR_NOT_RESET;  // 设置电机错误码为电机未复位
+
+            LOG_E(&quot;MOTOR_ERROR_NOT_RESET,%d,%d&quot;, motor-&gt;config-&gt;motor_id, __LINE__);
+            return RT_ERROR;
+        }
+#endif
+    }
+    else if (motor-&gt;reset_status == RESET_SIGNAL_SOURCE)
+    {
+        /* 程序继续运行，不做任何操作 */
+    }
+
+    // (0) 根据速度档位，更新速度参数
+    if (grade &gt;= MOTOR_GRADE_MAX_NUM)
+    {
+        return -1;
+    }
+
+    rt_memcpy(&amp;(motor-&gt;current_speed), &amp;(motor-&gt;config-&gt;speed_para[grade]), sizeof(motor_speed_t));
+
+    // 计算加速度并设置
+    rt_motor_calcaulate_speed(motor, target_steps);
+
+    // 设置方向 设置方向引脚的值
+    rt_motor_set_direction(motor, motor-&gt;direction);
+
+    // 设置正常模式
+    rt_motor_set_low_power(motor, NORMAL_POWER_MODE);
+
+    // 使能启动电机
+    rt_motor_start(motor);
+
+    // 等待电机运动完成
+    result = rt_motor_wait(motor, timeout);
+
+    return result;
+}
+
+// 电机移动目标步数（触发）
+uint32_t rt_motor_trigger_move(rt_motor_t *motor, uint16_t trigger_source, uint32_t grade, int32_t trigger_steps, uint32_t step2, uint32_t timeout)
+{
+    uint32_t result = RT_EOK;
+    LOG_W(&quot;%s:ID=%d,G=%d,%d&quot;, __func__, motor-&gt;config-&gt;motor_id, grade, trigger_steps);
+
+    motor-&gt;trigger_after_move_steps = step2;  // 触发后要走的减速的步数
+    motor-&gt;error_code               = 0;
+
+    motor-&gt;start_trigger_status = rt_motor_get_sensor(motor, trigger_source);  // 记录光耦起始状态
+    motor-&gt;trigger_status       = NULL_SIGNAL_SOURCE;                          // 设置触发状态为空（清空当前电机的触发状态）
+    motor-&gt;triggle_source |= trigger_source;                                   // 设置触发源
+
+    if (trigger_source == RESET_SIGNAL_SOURCE)
+    {
+        if (trigger_steps &gt;= 0)
+        {
+            motor-&gt;currentPosition = motor-&gt;config-&gt;min_position;
+        }
+        else
+        {
+            motor-&gt;currentPosition = motor-&gt;config-&gt;max_position;
+        }
+    }
+
+    result = rt_motor_move(motor, grade, trigger_steps, timeout);
+
+    return result;
+}
+
+// 等待运动完成
+uint32_t rt_motor_wait(rt_motor_t *motor, uint32_t timeout)
+{
+    uint32_t receiveEvent;
+    uint32_t result = RT_EOK;
+
+    if (timeout == 0)
+    {
+        // 非阻塞运动
+        result = RT_EOK;
+    }
+    else
+    {
+        // 阻塞运动，等待电机事件
+        if (rt_event_recv(&amp;(motor-&gt;motor_event), (MOTOR_EVENT_COMPLETED_FLAG | MOTOR_EVENT_ERROR_FLAG | MOTOR_EVENT_ARRIVED_FLAG),
+                          RT_EVENT_FLAG_OR | RT_EVENT_FLAG_CLEAR, timeout, &amp;receiveEvent)
+            == RT_EOK)
+        // 电机在指定时间完成或出现错误 ， 并将时间标志清除
+        {
+            // 如果电机运行错误
+            if (receiveEvent == MOTOR_EVENT_ERROR_FLAG)
+            {
+                // 电机中断会存出现把错误码
+                // 出错后，位置已异常，电机标记未复位状态
+                motor-&gt;reset_status = MOTOR_NO_RESET_STATUS;
+                LOG_E(&quot;MOTOR_NO_RESET_STATUS:%d, %d&quot;, motor-&gt;config-&gt;motor_id, __LINE__);
+                result = RT_ERROR;
+            }
+            else if (receiveEvent == MOTOR_EVENT_ARRIVED_FLAG)
+            {
+                LOG_W(&quot;MOTOR_EVENT_ARRIVED_FLAG&quot;);
+            }
+            else
+            {
+                // 碰撞运动是属于触发运动，会产生完成标志，不会产生错误标志，等完成减速后再判断标记错误
+                if (motor-&gt;error_code)  // 判断当前错误码
+                {
+                    // 出错后，位置已异常，电机标记未复位状态
+                    LOG_E(&quot;MOTOR_NO_RESET_STATUS:%d, %d,%d&quot;, motor-&gt;config-&gt;motor_id, motor-&gt;error_code, __LINE__);
+                    motor-&gt;reset_status = MOTOR_NO_RESET_STATUS;
+                    return RT_ERROR;
+                }
+            }
+        }
+        else
+        {
+            // 出错后，位置已异常，电机标记未复位状态
+            motor-&gt;reset_status = MOTOR_NO_RESET_STATUS;
+            motor-&gt;error_code   = MOTOR_ERROR_TIMEOUT;
+            LOG_E(&quot;MOTOR_ERROR_TIMEOUT:%d, %d,currentPosition=%d&quot;, motor-&gt;config-&gt;motor_id, __LINE__, motor-&gt;currentPosition);
+
+            rt_motor_instant_stop(motor);  // 立即停止，关闭定时器的中断
+            result = RT_ERROR;
+        }
+    }
+    return result;
+}
+
+// 启动电机
+uint32_t rt_motor_start(rt_motor_t *motor)
+{
+    uint32_t result = RT_EOK;
+
+    uint32_t reg_value = ENABLE;
+
+    RT_ASSERT(motor != RT_NULL);
+
+    rt_motor_set_enable(motor);
+
+    return result;
+}
+
+// 电机减速停止
+uint32_t rt_motor_dec_stop(rt_motor_t *motor, uint32_t target_steps)
+{
+    RT_ASSERT(motor != RT_NULL);
+
+    // 获取当前驱动层运动的步数，然后加上减速需要的步数
+    uint32_t remain_steps = target_steps + motor-&gt;absolute_steps;
+
+    // 更改速度参数为线性减速
+    motor_speed_t mspeed_para = {motor-&gt;currentFreq, motor-&gt;currentFreq, motor-&gt;current_speed.end_frequency, 0, 0, 0, 0, 0, target_steps, 0};
+
+    rt_memcpy(&amp;(motor-&gt;current_speed), (void *)&amp;mspeed_para, sizeof(motor_speed_t));
+
+    // 计算电机参数
+    rt_motor_calcaulate_speed(motor, remain_steps);
+
+    return RT_EOK;
+}
+
+void rt_motor_set_reset_status(rt_motor_t *motor, uint8_t reset_status)
+{
+    motor-&gt;reset_status = reset_status;
+}
+
+uint32_t rt_motor_get_reset_status(rt_motor_t *motor)
+{
+    return motor-&gt;reset_status;
+}
+
+// 设置运动方向
+uint32_t rt_motor_set_direction(rt_motor_t *motor, uint8_t direction)
+{
+    uint32_t reg_value = direction;
+    RT_ASSERT(motor != RT_NULL);
+
+    uint32_t dir = direction ^ (motor-&gt;config-&gt;direction_level);
+
+    if (dir)
+    {
+        rt_pin_write(motor-&gt;config-&gt;dir_pin, PIN_HIGH);
+    }
+    else
+    {
+        rt_pin_write(motor-&gt;config-&gt;dir_pin, PIN_LOW);
+    }
+
+    return RT_EOK;
+}
+
+// 获取匀速（最大频率）
+int rt_motor_get_id(rt_motor_t *motor)
+{
+    return motor-&gt;config-&gt;motor_id;
+}
+
+// 使能/失能AD采集
+uint32_t rt_motor_set_ad_collect_enable(rt_motor_t *motor, uint8_t enable_flag, uint32_t dynamic_steps)
+{
+    RT_ASSERT(motor != RT_NULL);
+    UNUSED(enable_flag);
+
+    RT_ASSERT(motor != RT_NULL);
+    uint32_t reg_value = 0;
+
+    /*
+     *  寄存器0位： 使能位
+     *  寄存器1位：电平有效位
+     */
+    if (enable_flag &gt; 0)
+    {
+        reg_value = 0x01;
+    }
+    else
+    {
+        reg_value = 0;
+    }
+
+    if (motor-&gt;config-&gt;code_signal_level &gt; 0)
+    {
+        reg_value += 0x02;
+    }
+    else
+    {
+        reg_value += 0x00;
+    }
+
+    // 动态AD采集偏移步数
+    if (dynamic_steps &gt; 0)
+    {
+        reg_value = reg_value + (dynamic_steps &lt;&lt; 16);
+    }
+
+    reg_value = 0;
+    return RT_EOK;
+}
+
+// 设置错误码
+uint32_t rt_motor_set_error_code(rt_motor_t *motor, uint32_t error_code)
+{
+    RT_ASSERT(motor != RT_NULL);
+
+    motor-&gt;error_code = error_code;
+
+    return RT_EOK;
+}
+
+// 获取错误码
+uint32_t rt_motor_get_error_code(rt_motor_t *motor, uint32_t *error_code)
+{
+    RT_ASSERT(motor != RT_NULL);
+
+    *error_code = motor-&gt;error_code;
+
+    return RT_EOK;
+}
+
+// 获取传感器的值
+uint32_t rt_motor_get_sensor(rt_motor_t *motor, uint16_t trigger_source)
+{
+    RT_ASSERT(motor != RT_NULL);
+
+    uint32_t temp_reg_value = 0;
+
+    if (trigger_source == RESET_SIGNAL_SOURCE)
+    {
+        temp_reg_value = rt_motor_get_reset_value(motor);
+    }
+    else if (trigger_source == CRASH_SIGNAL_SOURCE)
+    {
+        temp_reg_value = rt_motor_get_crash_value(motor);
+    }
+    else if (trigger_source == ARRIVE_SIGNAL_SOURCE)
+    {
+        temp_reg_value = rt_motor_get_arrive_value(motor);
+    }
+    else if (trigger_source == CODE_SIGNAL_SOURCE)
+    {
+        temp_reg_value = rt_motor_get_code_value(motor);
+    }
+
+    return temp_reg_value;
+}
+
+// 设置当前位置
+uint32_t rt_motor_set_current_position(rt_motor_t *motor, int32_t position)
+{
+    RT_ASSERT(motor != RT_NULL);
+
+    motor-&gt;currentPosition = position;
+
+    return RT_EOK;
+}
+
+// 获取当前位置
+int32_t rt_motor_get_current_position(rt_motor_t *motor)
+{
+    RT_ASSERT(motor != RT_NULL);
+
+    LOG_W(&quot;M%d, currentPosition=%d&quot;, motor-&gt;config-&gt;motor_id, motor-&gt;currentPosition);
+
+    return motor-&gt;currentPosition;
+}
+
+// 获取当前绝对步数
+uint32_t rt_motor_get_absolute_steps(rt_motor_t *motor)
+{
+    RT_ASSERT(motor != RT_NULL);
+
+    return (motor-&gt;absolute_steps);
+}
+
+// 计算加速度并设置
+uint32_t rt_motor_calcaulate_speed(rt_motor_t *motor, uint32_t target_steps)
+{
+    RT_ASSERT(motor != RT_NULL);
+    motor_speed_t *current_speed = &amp;motor-&gt;current_speed;
+
+    uint32_t area = 0;
+
+    // 计算加速需要的步数
+    motor-&gt;stepAcc = current_speed-&gt;step_t[0] + current_speed-&gt;step_t[1] + current_speed-&gt;step_t[2];
+
+    // 计算减速需要的步数
+    motor-&gt;stepDec = current_speed-&gt;step_t[4] + current_speed-&gt;step_t[5] + current_speed-&gt;step_t[6];
+
+    // 如果目标步数小于整个加减速需要步数, 按线性加减速处理， 并重新计算最大速度
+    if (target_steps &lt; (motor-&gt;stepAcc + motor-&gt;stepDec))
+    {
+        uint32_t temp_acc_all_steps = motor-&gt;stepAcc;
+
+        // 去除变加速减速阶段
+        current_speed-&gt;step_t[0] = 0;
+        current_speed-&gt;step_t[1] = target_steps * motor-&gt;stepAcc / (motor-&gt;stepAcc + motor-&gt;stepDec);
+        current_speed-&gt;step_t[2] = 0;
+        current_speed-&gt;step_t[4] = 0;
+        current_speed-&gt;step_t[5] = target_steps * motor-&gt;stepDec / (motor-&gt;stepAcc + motor-&gt;stepDec);
+        current_speed-&gt;step_t[6] = 0;
+
+        // 根绝加速步数比例计算最大频率
+        uint32_t detSpeed = current_speed-&gt;max_frequency - (current_speed-&gt;start_frequency / 2 + current_speed-&gt;end_frequency / 2);
+
+        current_speed-&gt;max_frequency = current_speed-&gt;start_frequency + current_speed-&gt;step_t[1] * detSpeed / motor-&gt;stepAcc;
+
+        motor-&gt;stepAcc = current_speed-&gt;step_t[1];
+        motor-&gt;stepDec = current_speed-&gt;step_t[5];
+    }
+
+    current_speed-&gt;step_t[3] = target_steps - (motor-&gt;stepAcc + motor-&gt;stepDec);
+
+    // 目标步数大于整个加减速，正常赋值
+    motor-&gt;stepT[0] = current_speed-&gt;step_t[0];
+    motor-&gt;stepT[1] = motor-&gt;stepT[0] + current_speed-&gt;step_t[1];
+    motor-&gt;stepT[2] = motor-&gt;stepT[1] + current_speed-&gt;step_t[2];
+    motor-&gt;stepT[3] = motor-&gt;stepT[2] + current_speed-&gt;step_t[3];
+    motor-&gt;stepT[4] = motor-&gt;stepT[3] + current_speed-&gt;step_t[4];
+    motor-&gt;stepT[5] = motor-&gt;stepT[4] + current_speed-&gt;step_t[5];
+    motor-&gt;stepT[6] = motor-&gt;stepT[5] + current_speed-&gt;step_t[6];
+
+    // 变加减速阶段的加速度
+    if ((current_speed-&gt;max_frequency) &lt;= (current_speed-&gt;start_frequency))  // 如果匀速（最大）频率小于起始频率
+    {
+        motor-&gt;acc1 = 0;
+        motor-&gt;acc2 = 0;
+    }
+    else
+    {
+        // 计算加速梯形面积（用最大频率减去起始频率）
+        area = (current_speed-&gt;max_frequency) - (current_speed-&gt;start_frequency);
+
+        // 计算变加速阶段的加速度
+        if (((current_speed-&gt;step_t[0]) == 0) &amp;&amp; ((current_speed-&gt;step_t[1]) == 0) &amp;&amp; ((current_speed-&gt;step_t[2]) == 0))
+        {
+            motor-&gt;acc1 = 0;
+            motor-&gt;acc2 = 0;
+        }
+        else
+        {
+            if ((current_speed-&gt;step_t[0] == 0) || (current_speed-&gt;step_t[2] == 0))
+            {
+                if (current_speed-&gt;step_t[1] != 0)
+                {
+                    motor-&gt;accMax = (area &lt;&lt; 10) / (current_speed-&gt;step_t[1]);
+                }
+                else
+                {
+                    motor-&gt;accMax = 0;
+                }
+            }
+            else
+            {
+                // 梯形面积计算（放大 1024）
+                motor-&gt;accMax = (area &lt;&lt; 11) / (2 * (current_speed-&gt;step_t[1]) + (current_speed-&gt;step_t[0]) + (current_speed-&gt;step_t[2]));
+                // 计算加加速度的值
+                motor-&gt;acc1 = motor-&gt;accMax / (current_speed-&gt;step_t[0]);
+                motor-&gt;acc2 = motor-&gt;accMax / (current_speed-&gt;step_t[2]);
+            }
+        }
+    }
+
+    if ((current_speed-&gt;max_frequency) &lt;= (current_speed-&gt;end_frequency))  // 如果匀速（最大）频率小于结束频率
+    {
+        motor-&gt;dec1 = 0;
+        motor-&gt;dec2 = 0;
+    }
+    else
+    {
+        // 计算减速梯形面积
+        area = (current_speed-&gt;max_frequency) - (current_speed-&gt;end_frequency);
+
+        // 计算变减速阶段的加速度
+        if (((current_speed-&gt;step_t[4]) == 0) &amp;&amp; ((current_speed-&gt;step_t[5]) == 0) &amp;&amp; ((current_speed-&gt;step_t[6]) == 0))
+        {
+            motor-&gt;dec1 = 0;
+            motor-&gt;dec2 = 0;
+        }
+        else
+        {
+            if ((current_speed-&gt;step_t[4] == 0) || (current_speed-&gt;step_t[6] == 0))
+            {
+                if (current_speed-&gt;step_t[5] != 0)
+                {
+                    motor-&gt;decMax = (area &lt;&lt; 10) / (current_speed-&gt;step_t[5]);
+                }
+                else
+                {
+                    motor-&gt;decMax = 0;
+                }
+            }
+            else
+            {
+                motor-&gt;decMax = (area &lt;&lt; 11) / (2 * (current_speed-&gt;step_t[5]) + (current_speed-&gt;step_t[4]) + (current_speed-&gt;step_t[6]));
+
+                motor-&gt;dec1 = motor-&gt;decMax / (current_speed-&gt;step_t[4]);
+                motor-&gt;dec2 = motor-&gt;decMax / (current_speed-&gt;step_t[6]);
+            }
+        }
+    }
+
+    // 梯形高被放大计算，这里需要处理加速度值
+    // acc1 = (acc1)&gt;&gt;2;
+    // acc2 = (acc2)&gt;&gt;2;
+    // motor-&gt;dec1 = (motor-&gt;dec1)&gt;&gt;2;
+    // motor-&gt;dec2 = (motor-&gt;dec2)&gt;&gt;2;
+#if 0
+    for (int i = 0; i &lt; 7; i++)
+    {
+        LOG_I(&quot;stepT[%d]=%d&quot;, i, motor-&gt;stepT[i]);
+    }
+
+    LOG_I(&quot;acc1= %d&quot;, motor-&gt;acc1);
+    LOG_I(&quot;acc2= %d&quot;, motor-&gt;acc2);
+    LOG_I(&quot;dec1= %d&quot;, motor-&gt;dec1);
+    LOG_I(&quot;dec2= %d&quot;, motor-&gt;dec2);
+
+    LOG_I(&quot;max_acc= %d&quot;, motor-&gt;accMax);
+    LOG_I(&quot;max_dec= %d&quot;, motor-&gt;decMax);
+    LOG_I(&quot;stepAcc= %d&quot;, motor-&gt;stepAcc);
+    LOG_I(&quot;stepAcc= %d&quot;, motor-&gt;stepDec);
+
+    LOG_I(&quot;start_frequency= %d&quot;, current_speed-&gt;start_frequency);
+    LOG_I(&quot;max_frequency= %d&quot;, current_speed-&gt;max_frequency);
+    LOG_I(&quot;end_frequency= %d&quot;, current_speed-&gt;end_frequency);
+#endif /* endif RT_USING_MOTOR_DEBUG */
+
+    int32_t AddFreq = 0;
+    int32_t CurFreq = current_speed-&gt;start_frequency &lt;&lt; 10;
+
+    // step3: 计算加速过程的频率变化
+    // LOG_I(&quot;ACC&quot;);
+    for (int i = 0; i &lt; motor-&gt;stepT[2]; i++)
+    {
+        if (i &lt; motor-&gt;stepT[0])
+        {
+            AddFreq = motor-&gt;acc1 * i;
+        }
+        else if (i &lt; motor-&gt;stepT[1])
+        {
+            AddFreq = motor-&gt;accMax;
+        }
+        else if (i &lt; motor-&gt;stepT[2])
+        {
+            AddFreq = motor-&gt;accMax - motor-&gt;acc2 * (i - motor-&gt;stepT[1]);
+        }
+
+        CurFreq += AddFreq;
+        if (0)
+        {
+            LOG_RAW(&quot;%d: %d\n&quot;, i, CurFreq &gt;&gt; 10);
+            for (int j = 0; j &lt; 10000; j++)
+                ;
+        }
+
+        motor-&gt;accTimArr[i] = (CurFreq &gt;&gt; 10);
+    };
+
+    // step4: 计算减速过程的频率变化
+    // 减速的最大频率为加速后的频率
+
+    // LOG_I(&quot;DEC&quot;);
+    uint16_t T5 = motor-&gt;stepT[4] - motor-&gt;stepT[3];
+    uint16_t T6 = motor-&gt;stepT[5] - motor-&gt;stepT[3];
+    uint16_t T7 = motor-&gt;stepT[6] - motor-&gt;stepT[3];
+
+    for (int i = 0; i &lt; T7; i++)
+    {
+        if (i &lt; T5)
+        {
+            AddFreq = motor-&gt;dec1 * i;
+        }
+        else if (i &lt; T6)
+        {
+            AddFreq = motor-&gt;decMax;
+        }
+        else if (i &lt; T7)
+        {
+            AddFreq = (motor-&gt;decMax + (motor-&gt;dec2 * (T6 - i)));
+        }
+        CurFreq -= AddFreq;
+        if (0)
+        {
+            LOG_RAW(&quot;%d: %d\n&quot;, i, CurFreq &gt;&gt; 10);
+            for (int j = 0; j &lt; 10000; j++)
+                ;
+        }
+
+        motor-&gt;decTimArr[i] = (CurFreq &gt;&gt; 10);
+    }
+
+    return 0;
+}
+
+int rt_motor_get_reset_value(rt_motor_t *motor)
+{
+    if (motor-&gt;config-&gt;reset_pin)
+    {
+        return (rt_pin_read(motor-&gt;config-&gt;reset_pin) != motor-&gt;config-&gt;reset_signal_level);
+    }
+    LOG_E(&quot;%s: reset_pin is not used&quot;, __func__);
+
+    return RT_ENOSYS;
+}
+
+int rt_motor_get_arrive_value(rt_motor_t *motor)
+{
+    if (motor-&gt;config-&gt;arrive_pin)
+    {
+        return (rt_pin_read(motor-&gt;config-&gt;arrive_pin) != motor-&gt;config-&gt;arrive_signal_level);
+    }
+
+    LOG_E(&quot;%s: arrive_pin is not used&quot;, __func__);
+
+    return RT_ENOSYS;
+}
+
+int rt_motor_get_crash_value(rt_motor_t *motor)
+{
+    if (motor-&gt;config-&gt;crash_pin)
+    {
+        return (rt_pin_read(motor-&gt;config-&gt;crash_pin) != motor-&gt;config-&gt;crash_signal_level);
+    }
+
+    LOG_E(&quot;%s: crash_pin is not used&quot;, __func__);
+
+    return RT_ENOSYS;
+}
+
+int rt_motor_get_code_value(rt_motor_t *motor)
+{
+    if (motor-&gt;config-&gt;code_pin)
+    {
+        return (rt_pin_read(motor-&gt;config-&gt;code_pin) != motor-&gt;config-&gt;code_signal_level);
+    }
+
+    LOG_E(&quot;%s: code_pin is not used&quot;, __func__);
+
+    return RT_ENOSYS;
+}
+/*
+ * 操作电机底层的接口
+ */
+void rt_motor_set_enable(rt_motor_t *motor)
+{
+    motor-&gt;timeLoadIndex    = 0;
+    motor-&gt;relativePosition = 0;
+    motor-&gt;timerCount       = 0;
+    motor-&gt;currentFreq      = motor-&gt;accTimArr[motor-&gt;timeLoadIndex];
+    motor-&gt;motionState      = MOTOR_STATE_ACCEL;
+
+    // 设置定时器加载值
+    if (motor-&gt;currentFreq &gt; 50000)
+    {
+        LOG_E(&quot;error Freq %d&quot;, motor-&gt;currentFreq);
+        motor-&gt;currentFreq = 1000;
+    }
+    motor-&gt;timeLoadValue = 2329600 / (motor-&gt;currentFreq);  // (SystemCoreClock / (MT_TIM_PERSCALER + 1)/2  167731200/36/2
+    __HAL_TIM_SET_AUTORELOAD(&amp;(motor-&gt;timerHandle), motor-&gt;timeLoadValue);
+
+    __HAL_TIM_SET_COUNTER(&amp;(motor-&gt;timerHandle), 0);
+    // 开启定时器中断
+    HAL_TIM_OC_Start_IT(&amp;(motor-&gt;timerHandle), motor-&gt;config-&gt;Channel);
+}
+
+// 设置使能模式
+void rt_motor_set_low_power(rt_motor_t *motor, uint8_t mode)
+{
+    rt_pin_write(motor-&gt;config-&gt;lpw_pin, motor-&gt;config-&gt;low_power_level ^ mode);
+}
+
+/******************************************************
+ * @decription: 电机立即停止
+ * @para:
+       @motor  ： 电机结构体对象
+ * @return: void
+ * @author： sicheng.lai
+ * @date: 2021-12-22
+ *******************************************************/
+uint32_t rt_motor_instant_stop(rt_motor_t *motor)
+{
+    HAL_TIM_OC_Stop_IT(&amp;(motor-&gt;timerHandle), motor-&gt;config-&gt;Channel);
+    motor-&gt;motionState = MOTOR_STATE_STOP;
+
+    rt_pin_write(motor-&gt;config-&gt;lpw_pin, motor-&gt;config-&gt;low_power_level ^ LOW_POWER_MODE);
+
+    return RT_EOK;
+}
+
+/******************************************************
+ * @decription: 触发信号检测
+ * @para:
+       @motor  ： 电机结构体对象
+ * @return: void
+ * @author： sicheng.lai
+ * @date: 2021-12-22
+ *******************************************************/
+uint32_t stm32_motor_siganal_triggle_check(rt_motor_t *motor)
+{
+    if ((motor-&gt;triggle_source &amp; RESET_SIGNAL_SOURCE) == RESET_SIGNAL_SOURCE)  // 电机驱动层复位触发检测
+    {
+        uint32_t reg_value = rt_motor_get_sensor(motor, RESET_SIGNAL_SOURCE);
+        if (reg_value != motor-&gt;start_trigger_status)  // 光耦跳变
+        {
+            motor-&gt;triggle_source &amp;= ~(uint32_t)RESET_SIGNAL_SOURCE;
+            motor-&gt;trigger_status |= RESET_SIGNAL_SOURCE;           // 设置触发状态为复位触发
+            if (motor-&gt;reset_signal_stop_way == MOTOR_DEC_TO_STOP)  // 如果复位停止方式为减速停止 TODO
+            {
+                rt_motor_dec_stop(motor, motor-&gt;trigger_after_move_steps);  // 减速停止
+            }
+            else
+            {
+                rt_motor_instant_stop(motor);  // 立即停止
+            }
+        }
+    }
+
+    if ((motor-&gt;triggle_source &amp; CRASH_SIGNAL_SOURCE) == CRASH_SIGNAL_SOURCE)
+    {
+        // 电机驱动层碰撞触发检测
+        if (rt_motor_get_sensor(motor, CRASH_SIGNAL_SOURCE) == 1)
+        {
+            motor-&gt;trigger_status |= CRASH_SIGNAL_SOURCE;
+            motor-&gt;triggle_source &amp;= ~(uint32_t)CRASH_SIGNAL_SOURCE;
+            motor-&gt;error_code = MOTOR_ERROR_CRASH;
+            if (motor-&gt;crash_signal_stop_way == MOTOR_DEC_TO_STOP)
+            {
+                rt_motor_dec_stop(motor, motor-&gt;config-&gt;steps_crash_signal);
+            }
+            else
+            {
+                rt_motor_instant_stop(motor);
+            }
+            rt_event_send(&amp;(motor-&gt;motor_event), MOTOR_EVENT_ERROR_FLAG);
+        }
+    }
+
+    // 电机驱动层抵达触发检测
+    if ((motor-&gt;triggle_source &amp; ARRIVE_SIGNAL_SOURCE) == ARRIVE_SIGNAL_SOURCE)
+    {
+        if (rt_motor_get_sensor(motor, ARRIVE_SIGNAL_SOURCE) == 1)
+        {
+            motor-&gt;trigger_status |= ARRIVE_SIGNAL_SOURCE;
+            motor-&gt;triggle_source &amp;= ~(uint32_t)ARRIVE_SIGNAL_SOURCE;
+            if (motor-&gt;arrive_signal_stop_way == MOTOR_DEC_TO_STOP)
+            {
+                rt_motor_dec_stop(motor, motor-&gt;config-&gt;steps_arrive_signal);
+            }
+            else
+            {
+                rt_motor_instant_stop(motor);
+            }
+            rt_event_send(&amp;(motor-&gt;motor_event), MOTOR_EVENT_ARRIVED_FLAG);
+        }
+    }
+    // motor-&gt;triggle_source = NULL_SIGNAL_SOURCE;  // 将触发检测位清除，防止重复触发运动
+
+    return RT_EOK;
+}
+
+/******************************************************
+ * @decription: 电机中断回调函数
+ * @para:
+       @motor  ： 电机结构体对象
+ * @return: void
+ * @author： sicheng.lai
+ * @date: 2021-12-22
+ *******************************************************/
+void HAL_TIM_OC_DelayElapsedCallback(TIM_HandleTypeDef *timerHandle)
+{
+    rt_interrupt_enter();
+
+    rt_motor_t *motor = (rt_motor_t *)(timerHandle-&gt;object);
+
+    // 判断，如果计数器的值大于重装载值，则手动清零
+    uint32_t counter    = __HAL_TIM_GET_COUNTER(&amp;(motor-&gt;timerHandle));
+    uint32_t autoreload = __HAL_TIM_GET_AUTORELOAD(&amp;(motor-&gt;timerHandle));
+    if (counter &gt;= autoreload)
+    {
+        LOG_E(&quot;__HAL_TIM_SET_COUNTER ID=%d,%d,%d,%d&quot;, motor-&gt;config-&gt;motor_id, counter, autoreload, motor-&gt;timerCount / 2);
+
+        __HAL_TIM_SET_COUNTER(&amp;(motor-&gt;timerHandle), 0);
+    }
+
+    motor-&gt;timerCount++;
+
+    // 判断完整脉冲
+    if (motor-&gt;timerCount % 2 == 0)
+    {
+        if (motor-&gt;motionState != MOTOR_STATE_RUN)
+        {
+            // 设置电机当前脉冲频率
+            if (motor-&gt;currentFreq &gt; 50000)
+            {
+                LOG_W(&quot;error timeLoadValue %d&quot;, motor-&gt;timeLoadValue);
+                motor-&gt;currentFreq = 1000;
+            }
+
+            motor-&gt;timeLoadValue = 2329600 / motor-&gt;currentFreq;  // (SystemCoreClock / (MT_TIM_PERSCALER + 1)/2
+            __HAL_TIM_SET_AUTORELOAD(&amp;(motor-&gt;timerHandle), motor-&gt;timeLoadValue);
+        }
+
+        // 电机不同状态处理
+        switch (motor-&gt;motionState)
+        {
+            case MOTOR_STATE_STOP:  //     停止/空闲
+            {
+                rt_motor_instant_stop(motor);
+                break;
+            }
+            case MOTOR_STATE_ACCEL:  //     加速
+            {
+                motor-&gt;relativePosition++;                   //     电机相对位置增加
+                if (motor-&gt;direction == DIRECTION_POSITIVE)  //     如果为正向运动
+                {
+                    motor-&gt;currentPosition++;
+                }
+                else
+                {
+                    motor-&gt;currentPosition--;
+                }
+
+                if (motor-&gt;relativePosition &lt; motor-&gt;stepAcc)
+                {
+                    if (motor-&gt;timeLoadIndex &lt; motor-&gt;stepAcc)
+                    {
+                        motor-&gt;timeLoadIndex++;
+                        motor-&gt;currentFreq = motor-&gt;accTimArr[motor-&gt;timeLoadIndex];
+                    }
+                }
+                else
+                {
+                    motor-&gt;motionState = MOTOR_STATE_RUN;
+                }
+                break;
+            }
+
+            case MOTOR_STATE_RUN:  //     匀速
+            {
+                motor-&gt;relativePosition++;
+                if (motor-&gt;direction == DIRECTION_POSITIVE)
+                {
+                    motor-&gt;currentPosition++;
+                }
+                else
+                {
+                    motor-&gt;currentPosition--;
+                }
+
+                if ((motor-&gt;stepT[6] - motor-&gt;relativePosition) &lt;= motor-&gt;stepDec)
+                {
+                    if (motor-&gt;stepDec == 0)
+                    {
+                        rt_motor_instant_stop(motor);
+                    }
+                    else
+                    {
+                        motor-&gt;motionState   = MOTOR_STATE_DECEL;
+                        motor-&gt;timeLoadIndex = 0;
+                    }
+                }
+
+                break;
+            }
+            case MOTOR_STATE_DECEL:  //     減速
+            {
+                motor-&gt;relativePosition++;
+                if (motor-&gt;direction == DIRECTION_POSITIVE)
+                {
+                    motor-&gt;currentPosition++;
+                }
+                else
+                {
+                    motor-&gt;currentPosition--;
+                }
+
+                if (motor-&gt;relativePosition &lt; motor-&gt;stepT[6])
+                {
+                    if (motor-&gt;timeLoadIndex &lt; motor-&gt;stepDec)
+                    {
+                        motor-&gt;currentFreq = motor-&gt;decTimArr[motor-&gt;timeLoadIndex];
+                        motor-&gt;timeLoadIndex++;
+                    }
+                }
+                else
+                {
+                    rt_motor_instant_stop(motor);
+                    int result = RT_EOK;
+
+                    // 检查抵达状态
+                    if ((motor-&gt;triggle_source == ARRIVE_SIGNAL_SOURCE) &amp;&amp; (motor-&gt;trigger_status == NULL_SIGNAL_SOURCE))
+                    {
+                        rt_motor_set_error_code(motor, MOTOR_ERROR_TIMEOUT);
+                        motor-&gt;triggle_source = NULL_SIGNAL_SOURCE;
+                        LOG_E(&quot;ARRIVE_SIGNAL_SOURCE trigger fail\n&quot;);
+                        motor-&gt;currentPosition = 0;
+
+                        result = RT_ERROR;
+                    }
+
+                    // 检查复位状态
+                    if ((motor-&gt;triggle_source == RESET_SIGNAL_SOURCE) &amp;&amp; (motor-&gt;trigger_status &amp; RESET_SIGNAL_SOURCE) != RESET_SIGNAL_SOURCE)
+                    {
+                        motor-&gt;reset_status = MOTOR_NO_RESET_STATUS;
+                        rt_motor_set_error_code(motor, MOTOR_ERROR_RESET_FAIL);
+                        result = RT_ERROR;
+                    }
+
+                    // 环形电机，没有尽头
+                    if (motor-&gt;config-&gt;motor_type == MOTOR_TYPE_CIRCLE || motor-&gt;config-&gt;motor_type == MOTOR_TYPE_SPECIAL_CIRCLE)
+                    {
+                        if (motor-&gt;currentPosition &gt; (motor-&gt;config-&gt;max_position - 1))
+                        {
+                            motor-&gt;currentPosition %= motor-&gt;config-&gt;max_position;
+                        }
+
+                        result = RT_EOK;
+                    }
+                    // 线性或其他电机:运动范围超限制判断
+                    else if (motor-&gt;currentPosition &gt; motor-&gt;config-&gt;max_position || motor-&gt;currentPosition &lt; motor-&gt;config-&gt;min_position)
+                    {
+                        motor-&gt;error_code = MOTOR_ERROR_EXCEL_LIMIT;
+                        result            = RT_ERROR;
+                    }
+
+                    // 触发后的执行函数（立即停止或减速停止）
+                    if (result != RT_EOK)
+                    {
+                        rt_event_send(&amp;(motor-&gt;motor_event), MOTOR_EVENT_ERROR_FLAG);  // 发送错误标志
+                    }
+                    else
+                    {
+                        rt_event_send(&amp;(motor-&gt;motor_event), MOTOR_EVENT_COMPLETED_FLAG);  // 发送完成事件标志
+                    }
+
+                    if (motor-&gt;triggle_source)
+                    {
+                        motor-&gt;triggle_source = NULL_SIGNAL_SOURCE;
+                    }
+                }
+
+                break;
+            }
+        }  // end switch
+
+        /* 更新当前绝对位置 */
+        motor-&gt;absolute_steps = motor-&gt;relativePosition;
+
+        if (motor-&gt;triggle_source)  // 如果设置了触发源
+        {
+            stm32_motor_siganal_triggle_check(motor);  // 触发信号检测
+        }
+
+        if (motor-&gt;triggle_source == NULL_SIGNAL_SOURCE)
+        {
+            if (motor-&gt;currentPosition &gt; motor-&gt;config-&gt;max_position || motor-&gt;currentPosition &lt; motor-&gt;config-&gt;min_position)
+            {
+                motor-&gt;error_code = MOTOR_ERROR_EXCEL_LIMIT;
+                LOG_E(&quot;motor_id=%d,currentPosition=%d, min_position=%d,max_position=%d&quot;, motor-&gt;config-&gt;motor_id, motor-&gt;currentPosition,
+                      motor-&gt;config-&gt;min_position, motor-&gt;config-&gt;max_position);
+                rt_motor_instant_stop(motor);
+                rt_event_send(&amp;(motor-&gt;motor_event), MOTOR_EVENT_ERROR_FLAG);
+            }
+        }
+    }  // end if(motor-&gt;timerCount% 2 == 0)
+
+    rt_interrupt_leave();
+}
+
+/******************************************************
+ * @decription: 初始化定时器
+ * @para:
+ *            @timerHandle： 定时器句柄
+       @timerType  ： 定时器编号
+       @timerIrqNum： 定时器中断编号
+ * @return: void
+ * @author： sicheng.lai
+ * @date: 2021-12-22
+ *******************************************************/
+void stm32_motor_timer_init(TIM_HandleTypeDef *timerHandle, TIM_TypeDef *timerType, uint32_t Channel)
+{
+    TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+    TIM_MasterConfigTypeDef sMasterConfig     = {0};
+    TIM_OC_InitTypeDef sConfigOC              = {0};
+    TIM_HandleTypeDef *timerHandleType        = timerHandle;
+
+    timerHandleType-&gt;Instance               = timerType;
+    timerHandleType-&gt;Init.CounterMode       = TIM_COUNTERMODE_UP;
+    timerHandleType-&gt;Init.Period            = 1000;
+    timerHandleType-&gt;Init.ClockDivision     = TIM_CLOCKDIVISION_DIV1;
+    timerHandleType-&gt;Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+
+    if (timerType == TIM1 || timerType == TIM8 || timerType == TIM9 || timerType == TIM10 || timerType == TIM11)
+    {
+
+        timerHandleType-&gt;Init.Prescaler = 34;
+    }
+    else
+    {
+
+        timerHandleType-&gt;Init.Prescaler = 17;
+    }
+
+    // 1、基础定时器初始化
+    if (HAL_TIM_Base_Init(timerHandleType) != RT_EOK)
+    {
+        Error_Handler();
+    }
+
+    sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+    if (HAL_TIM_ConfigClockSource(timerHandleType, &amp;sClockSourceConfig) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    if (HAL_TIM_OC_Init(timerHandleType) != HAL_OK)
+    {
+        Error_Handler();
+    }
+
+    sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+    sMasterConfig.MasterSlaveMode     = TIM_MASTERSLAVEMODE_DISABLE;
+
+    // 2、主机模式配置同步
+    if (HAL_TIMEx_MasterConfigSynchronization(timerHandleType, &amp;sMasterConfig) != RT_EOK)
+    {
+        Error_Handler();
+    }
+
+    sConfigOC.OCMode     = TIM_OCMODE_TOGGLE;
+    sConfigOC.Pulse      = 0;
+    sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+    sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+
+    if (HAL_TIM_OC_ConfigChannel(timerHandleType, &amp;sConfigOC, Channel) != HAL_OK)
+    {
+        Error_Handler();
+    }
+    __HAL_TIM_ENABLE_OCxPRELOAD(timerHandleType, Channel);
+}
+
+void stm32_motor_pin_clk_enable(GPIO_TypeDef *GPIOx)
+{
+    if (GPIOx == GPIOA)
+    {
+        __HAL_RCC_GPIOA_CLK_ENABLE();
+    }
+    else if (GPIOx == GPIOB)
+    {
+        __HAL_RCC_GPIOB_CLK_ENABLE();
+    }
+    else if (GPIOx == GPIOC)
+    {
+        __HAL_RCC_GPIOC_CLK_ENABLE();
+    }
+    else if (GPIOx == GPIOD)
+    {
+        __HAL_RCC_GPIOD_CLK_ENABLE();
+    }
+    else if (GPIOx == GPIOE)
+    {
+        __HAL_RCC_GPIOE_CLK_ENABLE();
+    }
+    else if (GPIOx == GPIOF)
+    {
+        __HAL_RCC_GPIOF_CLK_ENABLE();
+    }
+    else if (GPIOx == GPIOG)
+    {
+        __HAL_RCC_GPIOG_CLK_ENABLE();
+    }
+}
+
+void stm32_motor_timer_MspPostInit(uint32_t pwm_pin, GPIO_TypeDef *GPIOx, TIM_TypeDef *TIMx, uint32_t Channel)
+{
+
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+    stm32_motor_pin_clk_enable(GPIOx);
+
+    GPIO_InitStruct.Pin   = pwm_pin;
+    GPIO_InitStruct.Mode  = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
+#if defined(STM32F407xx)
+
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+
+    if (TIMx == TIM1)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
+    }
+    else if (TIMx == TIM2)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
+    }
+    else if (TIMx == TIM3)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
+    }
+    else if (TIMx == TIM4)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
+    }
+    else if (TIMx == TIM5)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF2_TIM5;
+    }
+    else if (TIMx == TIM8)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF3_TIM8;
+    }
+    else if (TIMx == TIM9)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF3_TIM9;
+    }
+    else if (TIMx == TIM10)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF3_TIM10;
+    }
+    else if (TIMx == TIM11)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF3_TIM11;
+    }
+    else if (TIMx == TIM12)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF9_TIM12;
+    }
+    else if (TIMx == TIM13)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF9_TIM13;
+    }
+    else if (TIMx == TIM14)
+    {
+        GPIO_InitStruct.Alternate = GPIO_AF9_TIM14;
+    }
+#endif /* endif of defined(STM32F407xx) */
+
+    HAL_GPIO_Init(GPIOx, &amp;GPIO_InitStruct);
+
+#if defined(STM32F103xE)
+
+    /**
+   * @brief Enable the remapping of TIM4 alternate function channels 1 to 4.
+   * @note  ENABLE: Full remap (TIM4_CH1/PD12, TIM4_CH2/PD13, TIM4_CH3/PD14, TIM4_CH4/PD15)
+   * @note  TIM4_ETR on PE0 is not re-mapped.
+   * @retval None
+   */
+    if (GPIOx == GPIOD &amp;&amp; pwm_pin == GPIO_PIN_12 &amp;&amp; TIMx == TIM4 &amp;&amp; Channel == TIM_CHANNEL_1)
+    {
+
+        __HAL_AFIO_REMAP_TIM4_ENABLE();  //     打开复用
+    }
+#endif
+}
+
+uint32_t rt_motor_init(rt_motor_t *motor, rt_motor_config_t *config)
+{
+    // 创建电机控制器
+    motor-&gt;config = config;
+    // 初始化定时器
+    stm32_motor_timer_init(&amp;motor-&gt;timerHandle, motor-&gt;config-&gt;timerType, motor-&gt;config-&gt;Channel);
+    motor-&gt;timerHandle.object = motor;
+
+    // 电机引脚初始化
+    if (motor-&gt;config-&gt;dir_pin)
+        rt_pin_mode(motor-&gt;config-&gt;dir_pin, PIN_MODE_OUTPUT);  // 电机方向引脚
+    if (motor-&gt;config-&gt;lpw_pin)
+        rt_pin_mode(motor-&gt;config-&gt;lpw_pin, PIN_MODE_OUTPUT);  // 电机低功耗引脚
+
+    // 电机时钟引脚初始化
+    stm32_motor_timer_MspPostInit(motor-&gt;config-&gt;pwm_pin, motor-&gt;config-&gt;GPIOx, motor-&gt;config-&gt;timerType, motor-&gt;config-&gt;Channel);
+    if (motor-&gt;config-&gt;reset_pin)
+        rt_pin_mode(motor-&gt;config-&gt;reset_pin, PIN_MODE_INPUT);  // 电机复位检测引脚
+    if (motor-&gt;config-&gt;crash_pin)
+        rt_pin_mode(motor-&gt;config-&gt;crash_pin, PIN_MODE_INPUT);  // 电机碰撞检测引脚
+    if (motor-&gt;config-&gt;arrive_pin)
+        rt_pin_mode(motor-&gt;config-&gt;arrive_pin, PIN_MODE_INPUT);  // 电机抵达检测引脚
+
+    LOG_I(&quot;%s %d ok&quot;, __func__, motor-&gt;config-&gt;motor_id);
+
+    // 状态初始化
+    motor-&gt;reset_status = MOTOR_NO_RESET_STATUS;
+
+    // 电机默认静止
+    HAL_TIM_OC_Stop_IT(&amp;(motor-&gt;timerHandle), motor-&gt;config-&gt;Channel);
+
+    rt_pin_write(motor-&gt;config-&gt;lpw_pin, motor-&gt;config-&gt;low_power_level ^ LOW_POWER_MODE);
+
+    motor-&gt;triggle_source = NULL_SIGNAL_SOURCE;
+
+    // 创建或初始化事件集
+    rt_event_init(&amp;(motor-&gt;motor_event), &quot;event&quot;, RT_IPC_FLAG_FIFO);
+
+    // 设置默认的速度档位
+    rt_memcpy(&amp;(motor-&gt;current_speed), (void *)&amp;motor-&gt;config-&gt;speed_para[MOTOR_GRADE_1], sizeof(motor_speed_t));
+
+    // 初始化设置触发后的执行方式
+    motor-&gt;reset_signal_stop_way  = MOTOR_DEC_TO_STOP;
+    motor-&gt;crash_signal_stop_way  = MOTOR_INSTANT_STOP;
+    motor-&gt;arrive_signal_stop_way = MOTOR_DEC_TO_STOP;
+    motor-&gt;liquid_signal_stop_way = MOTOR_INSTANT_STOP;
+    char mq_str[20];
+    rt_sprintf(mq_str, &quot;mq_%s&quot;, motor-&gt;config-&gt;name);
+    motor-&gt;mq = rt_mq_create((const char *)mq_str, sizeof(msg), 5, RT_IPC_FLAG_FIFO);
+    if (motor-&gt;mq == RT_NULL)
+    {
+        LOG_E(&quot;%s create fail!\n&quot;, mq_str);
+        return RT_ERROR;
+    }
+    LOG_I(&quot;create %s ok&quot;, mq_str);
+
+    return RT_EOK;
+}
+
+$define ${AOs::Motor}
+
+$declare ${Shared}
+
 </text>
   </file>
  </directory>
