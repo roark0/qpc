@@ -25,14 +25,19 @@
 #include "qpc.h"
 Q_DEFINE_THIS_FILE
 
-enum { BSP_TICKS_PER_SEC = 100 };
+#define LOG_TAG "blinky"
+#define DBG_SECTION_NAME "blinky"
+#define LOG_LVL DBG_LOG
+#include <rtdbg.h>
+
+enum { BSP_TICKS_PER_SEC = 1000};
 
 void BSP_ledOff(void) {
-    rt_kprintf("LED OFF\n");
+    LOG_I("LED OFF\n");
 }
 
 void BSP_ledOn(void) {
-    rt_kprintf("LED ON\n");
+    LOG_I("LED ON\n");
 }
 
 enum BlinkySignals {
@@ -83,7 +88,7 @@ MSH_CMD_EXPORT(qpc_blinky_start, start qpc blinky example);
 static QState Blinky_initial(Blinky * const me, QEvt const * const e) {
     (void)e; /* unused parameter */
 
-    QTimeEvt_armX(&me->timeEvt, BSP_TICKS_PER_SEC/2, BSP_TICKS_PER_SEC/2);
+    QTimeEvt_armX(&me->timeEvt, BSP_TICKS_PER_SEC*2, BSP_TICKS_PER_SEC*2);
     return Q_TRAN(&Blinky_off);
 }
 
